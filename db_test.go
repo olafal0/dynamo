@@ -35,6 +35,14 @@ type widget struct {
 	Meta   map[string]string
 }
 
+func (w widget) HashKey() interface{} {
+	return w.UserID
+}
+
+func (w widget) RangeKey() interface{} {
+	return w.Time
+}
+
 func isConditionalCheckErr(err error) bool {
 	if ae, ok := err.(awserr.RequestFailure); ok {
 		return ae.Code() == "ConditionalCheckFailedException"
