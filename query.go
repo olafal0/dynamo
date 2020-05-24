@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,8 +18,9 @@ type Query struct {
 	startKey map[string]*dynamodb.AttributeValue
 	index    string
 
-	hashKey   string
-	hashValue *dynamodb.AttributeValue
+	hashKey            string
+	hashValue          *dynamodb.AttributeValue
+	hashValueInterface interface{}
 
 	rangeKey    string
 	rangeValues []*dynamodb.AttributeValue
@@ -26,6 +28,7 @@ type Query struct {
 
 	projection  string
 	filters     []string
+	keyCondExpr string
 	consistent  bool
 	limit       int64
 	searchLimit int64
@@ -82,6 +85,7 @@ func (table Table) Get(name string, value interface{}) *Query {
 		table:   table,
 		hashKey: name,
 	}
+	q.hashValueInterface = value
 	q.hashValue, q.err = marshal(value, "")
 	return q
 }
@@ -148,6 +152,28 @@ func (q *Query) Filter(expr string, args ...interface{}) *Query {
 	expr, err := q.subExpr(expr, args...)
 	q.setError(err)
 	q.filters = append(q.filters, expr)
+	return q
+}
+
+// KeyCondExpr specifies the key values for items retrieved by the query, using
+// KeyConditionExpression. Use single quotes to specificy reserved names inline
+// (like 'Count'). Use the placeholder ? within the expression to substitute
+// values, and use $ for names. You need to use quoted or placeholder names when
+// the name is a reserved word in DynamoDB.
+//
+// You do not need to specify a condition for the hash key. A hash key equality
+// condition is automatically added according to the initial value set in table.Get().
+//
+// Example:
+//
+// 	q.KeyCondExpr("'Time' BETWEEN ? AND ?", startTime, endTime)
+func (q *Query) KeyCondExpr(expr string, args ...interface{}) *Query {
+	// Append the hash key condition to the key condition expression
+	expr = fmt.Sprintf("%v AND '%s' = ?", expr, q.hashKey)
+	args = append(args, q.hashValueInterface)
+	expr, err := q.subExpr(expr, args...)
+	q.setError(err)
+	q.keyCondExpr = expr
 	return q
 }
 
@@ -458,7 +484,6 @@ func (q *Query) canGetItem() bool {
 func (q *Query) queryInput() *dynamodb.QueryInput {
 	req := &dynamodb.QueryInput{
 		TableName:                 &q.table.name,
-		KeyConditions:             q.keyConditions(),
 		ExclusiveStartKey:         q.startKey,
 		ExpressionAttributeNames:  q.nameExpr,
 		ExpressionAttributeValues: q.valueExpr,
@@ -480,6 +505,13 @@ func (q *Query) queryInput() *dynamodb.QueryInput {
 	if len(q.filters) > 0 {
 		filter := strings.Join(q.filters, " AND ")
 		req.FilterExpression = &filter
+	}
+	// If a key condition expression is specified, use it. Otherwise, fall back to
+	// the depreciated KeyCondition field.
+	if q.keyCondExpr != "" {
+		req.KeyConditionExpression = aws.String(q.keyCondExpr)
+	} else {
+		req.KeyConditions = q.keyConditions()
 	}
 	if q.index != "" {
 		req.IndexName = &q.index

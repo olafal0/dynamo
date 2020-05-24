@@ -145,7 +145,7 @@ func TestQueryPaging(t *testing.T) {
 		return
 	}
 
-	itr := table.Get("UserID", 1969).SearchLimit(1).Iter()
+	itr := table.Get("UserID", 1969).SearchLimit(1).Consistent(true).Iter()
 	for i := 0; i < len(widgets); i++ {
 		var w widget
 		itr.Next(&w)
@@ -159,6 +159,67 @@ func TestQueryPaging(t *testing.T) {
 		if more {
 			t.Error("unexpected more", more)
 		}
-		itr = table.Get("UserID", 1969).StartFrom(itr.LastEvaluatedKey()).SearchLimit(1).Iter()
+		itr = table.Get("UserID", 1969).StartFrom(itr.LastEvaluatedKey()).SearchLimit(1).Consistent(true).Iter()
 	}
+}
+
+func TestMultipleKeyConditions(t *testing.T) {
+	if testDB == nil {
+		t.Skip(offlineSkipMsg)
+	}
+	table := testDB.Table(testTable)
+
+	// Add three messages; one now, one an hour ago, one an hour from now
+	items := []widget{
+		widget{
+			UserID: 84,
+			Time:   time.Now().Add(-60 * time.Minute).UTC(),
+			Msg:    "hello",
+		},
+		widget{
+			UserID: 84,
+			Time:   time.Now().UTC(),
+			Msg:    "world",
+		},
+		widget{
+			UserID: 84,
+			Time:   time.Now().Add(60 * time.Minute).UTC(),
+			Msg:    "!",
+		},
+	}
+
+	// Register cleanup function to remove records after the test runs
+	t.Cleanup(func() {
+		_, err := table.Batch("UserID", "Time").Write().Delete(items[0], items[1], items[2]).Run()
+		if err != nil {
+			t.Error("unexpected error:", err)
+		}
+	})
+
+	for _, item := range items {
+		err := table.Put(item).Run()
+		if err != nil {
+			t.Error("unexpected error:", err)
+		}
+	}
+
+	// Query with range key expressions to limit results to now +/- 30m, which
+	// should only return the middle result
+	var result []widget
+	windowStart := time.Now().Add(-30 * time.Minute).UTC()
+	windowEnd := time.Now().Add(30 * time.Minute).UTC()
+	err := table.Get("UserID", 84).
+		KeyCondExpr("'Time' BETWEEN ? AND ?", windowStart, windowEnd).
+		Consistent(true).All(&result)
+
+	if err != nil {
+		t.Error("unexpected error:", err)
+	}
+
+	if len(result) != 1 {
+		t.Error("expected 1 result, got", len(result))
+	} else if !reflect.DeepEqual(items[1], result[0]) {
+		t.Errorf("incorrect item returned; expected %v, got %v", items[1], result[0])
+	}
+
 }
